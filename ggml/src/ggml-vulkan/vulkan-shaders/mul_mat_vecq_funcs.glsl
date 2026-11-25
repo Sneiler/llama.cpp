@@ -386,7 +386,7 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
 #endif
 
 #if defined(DATA_A_Q6_K)
-// 2-byte loads for Q6_K blocks (210 bytes)
+// 4-byte aligned loads for Q6_K blocks (210 bytes) to avoid unaligned 32-bit LSC loads on Intel ANV
 i32vec4 repack4(uint ib, uint iqs) {
     const uint ib_k = ib / 8;
     const uint iqs_k = (ib % 8) * 8 + iqs;
@@ -397,23 +397,41 @@ i32vec4 repack4(uint ib, uint iqs) {
     const uint qh_idx = (iqs_k / 32) * 8 + iqs;
     const uint qh_shift = ((iqs_k % 32) / 8) * 2;
 
-    const uvec4 ql = uvec4( uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2    ]) |
-                           (uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 1]) << 16),
-                            uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 2]) |
-                           (uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 3]) << 16),
-                            uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 4]) |
-                           (uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 5]) << 16),
-                            uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 6]) |
-                           (uint32_t(data_a_packed16[ib_k].ql[ql_idx * 2 + 7]) << 16));
+    const uint w_base = (ib_k * 210u) >> 2u;
+    const uint w_ql = w_base + ql_idx;
+    const uint w_qh = w_base + 32u + qh_idx;
 
-    const uvec4 qh = uvec4( uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2    ]) |
-                           (uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 1]) << 16),
-                            uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 2]) |
-                           (uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 3]) << 16),
-                            uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 4]) |
-                           (uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 5]) << 16),
-                            uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 6]) |
-                           (uint32_t(data_a_packed16[ib_k].qh[qh_idx * 2 + 7]) << 16));
+    uvec4 ql, qh;
+    if ((ib_k & 1u) == 0u) {
+        ql = uvec4(data_a_u32[w_ql    ],
+                   data_a_u32[w_ql + 1],
+                   data_a_u32[w_ql + 2],
+                   data_a_u32[w_ql + 3]);
+        qh = uvec4(data_a_u32[w_qh    ],
+                   data_a_u32[w_qh + 1],
+                   data_a_u32[w_qh + 2],
+                   data_a_u32[w_qh + 3]);
+    } else {
+        const uint ql0 = data_a_u32[w_ql    ];
+        const uint ql1 = data_a_u32[w_ql + 1];
+        const uint ql2 = data_a_u32[w_ql + 2];
+        const uint ql3 = data_a_u32[w_ql + 3];
+        const uint ql4 = data_a_u32[w_ql + 4];
+        ql = uvec4((ql0 >> 16u) | (ql1 << 16u),
+                   (ql1 >> 16u) | (ql2 << 16u),
+                   (ql2 >> 16u) | (ql3 << 16u),
+                   (ql3 >> 16u) | (ql4 << 16u));
+
+        const uint qh0 = data_a_u32[w_qh    ];
+        const uint qh1 = data_a_u32[w_qh + 1];
+        const uint qh2 = data_a_u32[w_qh + 2];
+        const uint qh3 = data_a_u32[w_qh + 3];
+        const uint qh4 = data_a_u32[w_qh + 4];
+        qh = uvec4((qh0 >> 16u) | (qh1 << 16u),
+                   (qh1 >> 16u) | (qh2 << 16u),
+                   (qh2 >> 16u) | (qh3 << 16u),
+                   (qh3 >> 16u) | (qh4 << 16u));
+    }
 
     const uint vals0 = (( ql.x >> ql_shift) & 0x0F0F0F0F) |
                        (((qh.x >> qh_shift) & 0x03030303) << 4);
