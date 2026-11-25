@@ -126,10 +126,15 @@ FLOAT_TYPE mul_q8_1(const int32_t q_sum, const vec2 dma, const vec2 dsb, const i
 #endif
 
 #if defined(DATA_A_Q8_0)
-// 2-byte loads for Q8_0 blocks (34 bytes)
+// 4-byte aligned loads for Q8_0 blocks (34 bytes) to avoid unaligned 32-bit LSC loads on Intel ANV
 int32_t repack(uint ib, uint iqs) {
-    return pack32(i16vec2(data_a_packed16[ib].qs[iqs * 2    ],
-                          data_a_packed16[ib].qs[iqs * 2 + 1]));
+    const uint byte_off = ib * 34u + 2u + iqs * 4u;
+    const uint w = byte_off >> 2u;
+    if ((ib & 1u) != 0u) {
+        return int32_t(data_a_u32[w]);
+    } else {
+        return int32_t((data_a_u32[w] >> 16u) | (data_a_u32[w + 1u] << 16u));
+    }
 }
 
 FLOAT_TYPE mul_q8_1(const int32_t q_sum, const float da, const vec2 dsb, const int32_t sum_divisor) {

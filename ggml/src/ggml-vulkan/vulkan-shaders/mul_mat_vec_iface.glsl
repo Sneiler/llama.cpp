@@ -12,6 +12,9 @@ layout (binding = 0) readonly buffer AV4 {A_TYPEV4 data_a_v4[];};
 #if defined(A_TYPE_PACKED16)
 layout (binding = 0) readonly buffer A_PACKED16 {A_TYPE_PACKED16 data_a_packed16[];};
 #endif
+#if defined(DATA_A_Q6_K) || defined(DATA_A_Q8_0)
+layout (binding = 0) readonly buffer A_U32 {uint32_t data_a_u32[];};
+#endif
 #if defined(A_TYPE_PACKED32)
 layout (binding = 0) readonly buffer A_PACKED32 {A_TYPE_PACKED32 data_a_packed32[];};
 #endif
