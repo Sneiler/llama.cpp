@@ -163,37 +163,45 @@ FLOAT_TYPE mul_q8_1(const int32_t q_sum, const float da, const vec2 dsb, const i
 #endif
 
 #if defined(DATA_A_Q2_0)
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t q_sum = 0;
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const i32vec4 qs_a = repack4(ib_a, iqs);
-    q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[0]);
-    q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[1]);
-    q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[2]);
-    q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[3]);
+    const FLOAT_TYPE dm = get_dm(ib_a);
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t q_sum = 0;
+        q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j][1]);
+        q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[j][2]);
+        q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[j][3]);
 
-    // 16 quants per call => divide sums by 32/16 = 2
-    return mul_q8_1(q_sum, get_dm(ib_a), cache_b_ds, 2);
+        // 16 quants per call => divide sums by 32/16 = 2
+        temp[j][row_idx] += mul_q8_1(q_sum, dm, cache_b_ds[j], 2);
+    }
 }
 #elif defined(DATA_A_QUANT_LEGACY) || defined(DATA_A_MXFP4)
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t q_sum = 0;
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
 #if QUANT_R == 2
     const i32vec2 data_a_qs = repack(ib_a, iqs);
-    q_sum += dotPacked4x8EXT(data_a_qs.x,
-                             cache_b_qs[0]);
-    q_sum += dotPacked4x8EXT(data_a_qs.y,
-                             cache_b_qs[1]);
 #else
-    int32_t data_a_qs = repack(ib_a, iqs * 2);
-    q_sum += dotPacked4x8EXT(data_a_qs,
-                             cache_b_qs[0]);
-    data_a_qs = repack(ib_a, iqs * 2 + 1);
-    q_sum += dotPacked4x8EXT(data_a_qs,
-                             cache_b_qs[1]);
+    const int32_t data_a_qs0 = repack(ib_a, iqs * 2);
+    const int32_t data_a_qs1 = repack(ib_a, iqs * 2 + 1);
 #endif
-
-    // 2 quants per call => divide sums by 8/2 = 4
-    return mul_q8_1(q_sum, get_dm(ib_a), cache_b_ds, 4);
+#if defined(DATA_A_Q4_1) || defined(DATA_A_Q5_1)
+    const FLOAT_TYPEV2 dm = get_dm(ib_a);
+#else
+    const FLOAT_TYPE dm = get_dm(ib_a);
+#endif
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t q_sum = 0;
+#if QUANT_R == 2
+        q_sum += dotPacked4x8EXT(data_a_qs.x, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(data_a_qs.y, cache_b_qs[j][1]);
+#else
+        q_sum += dotPacked4x8EXT(data_a_qs0, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(data_a_qs1, cache_b_qs[j][1]);
+#endif
+        // 2 quants per call => divide sums by 8/2 = 4
+        temp[j][row_idx] += mul_q8_1(q_sum, dm, cache_b_ds[j], 4);
+    }
 }
 #endif
 
@@ -219,28 +227,30 @@ uint8_t get_scale(uint ib, uint iqs) {
     return data_a[ib_k].scales[iqs_k / 4];
 }
 
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t sum_d = 0;
-    int32_t sum_m = 0;
-
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const i32vec4 qs_a = repack4(ib_a, iqs * 4);
     const uint8_t scale = get_scale(ib_a, iqs * 4);
     const vec2 dm = vec2(get_dm(ib_a));
     const int32_t scale_m = int32_t(scale >> 4) * 0x01010101; // Duplicate 8-bit value across 32-bits.
 
-    sum_d += dotPacked4x8EXT(qs_a.x, cache_b_qs[0]) * (scale & 0xF);
-    sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[0]);
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t sum_d = 0;
+        int32_t sum_m = 0;
 
-    sum_d += dotPacked4x8EXT(qs_a.y, cache_b_qs[1]) * (scale & 0xF);
-    sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[1]);
+        sum_d += dotPacked4x8EXT(qs_a.x, cache_b_qs[j][0]) * (scale & 0xF);
+        sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[j][0]);
 
-    sum_d += dotPacked4x8EXT(qs_a.z, cache_b_qs[2]) * (scale & 0xF);
-    sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[2]);
+        sum_d += dotPacked4x8EXT(qs_a.y, cache_b_qs[j][1]) * (scale & 0xF);
+        sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[j][1]);
 
-    sum_d += dotPacked4x8EXT(qs_a.w, cache_b_qs[3]) * (scale & 0xF);
-    sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[3]);
+        sum_d += dotPacked4x8EXT(qs_a.z, cache_b_qs[j][2]) * (scale & 0xF);
+        sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[j][2]);
 
-    return FLOAT_TYPE(float(cache_b_ds.x) * (float(dm.x) * float(sum_d) - float(dm.y) * float(sum_m)));
+        sum_d += dotPacked4x8EXT(qs_a.w, cache_b_qs[j][3]) * (scale & 0xF);
+        sum_m += dotPacked4x8EXT(scale_m, cache_b_qs[j][3]);
+
+        temp[j][row_idx] += FLOAT_TYPE(float(cache_b_ds[j].x) * (float(dm.x) * float(sum_d) - float(dm.y) * float(sum_m)));
+    }
 }
 #endif
 
@@ -300,18 +310,20 @@ float get_d_scale(uint ib, uint iqs) {
     return float(data_a[ib_k].d) * float(scale - 32);
 }
 
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t q_sum = 0;
-
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const i32vec4 qs_a = repack4(ib_a, iqs * 4);
     const float d_scale = get_d_scale(ib_a, iqs * 4);
 
-    q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[0]);
-    q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[1]);
-    q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[2]);
-    q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[3]);
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t q_sum = 0;
 
-    return FLOAT_TYPE(float(cache_b_ds.x) * d_scale * float(q_sum));
+        q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j][1]);
+        q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[j][2]);
+        q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[j][3]);
+
+        temp[j][row_idx] += FLOAT_TYPE(float(cache_b_ds[j].x) * d_scale * float(q_sum));
+    }
 }
 #endif
 
@@ -370,18 +382,20 @@ vec2 get_dm_scale(uint ib, uint iqs) {
     return FLOAT_TYPEV2(data_a_packed32[ib_k].dm) * FLOAT_TYPEV2(scale_dm);
 }
 
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t q_sum = 0;
-
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const i32vec4 qs_a = repack4(ib_a, iqs * 4);
     const vec2 dm_scale = get_dm_scale(ib_a, iqs * 4);
 
-    q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[0]);
-    q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[1]);
-    q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[2]);
-    q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[3]);
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t q_sum = 0;
 
-    return FLOAT_TYPE(float(cache_b_ds.x) * float(dm_scale.x) * float(q_sum) - float(dm_scale.y) * float(cache_b_ds.y / 2));
+        q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j][1]);
+        q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[j][2]);
+        q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[j][3]);
+
+        temp[j][row_idx] += FLOAT_TYPE(float(cache_b_ds[j].x) * float(dm_scale.x) * float(q_sum) - float(dm_scale.y) * float(cache_b_ds[j].y / 2));
+    }
 }
 #endif
 
@@ -456,40 +470,49 @@ float get_d_scale(uint ib, uint iqs) {
     return float(data_a[ib_k].d) * float(data_a[ib_k].scales[iqs_k / 4]);
 }
 
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t q_sum = 0;
-
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const i32vec4 qs_a = repack4(ib_a, iqs * 4);
     const float d_scale = get_d_scale(ib_a, iqs * 4);
 
-    q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[0]);
-    q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[1]);
-    q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[2]);
-    q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[3]);
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t q_sum = 0;
 
-    return FLOAT_TYPE(float(cache_b_ds.x) * float(d_scale) * float(q_sum));
+        q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j][1]);
+        q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[j][2]);
+        q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[j][3]);
+
+        temp[j][row_idx] += FLOAT_TYPE(float(cache_b_ds[j].x) * float(d_scale) * float(q_sum));
+    }
 }
 #endif
 
 #if defined(DATA_A_IQ4_XS)
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const uint ib = ib_a / 8;
     const uint ib32 = ib_a % 8;
 
-    int32_t q_sum = 0;
+    int32_t q_sum[NUM_COLS];
+    [[unroll]] for (uint c = 0; c < NUM_COLS; ++c) {
+        q_sum[c] = 0;
+    }
     [[unroll]] for (uint j = 0; j < 4; ++j) {
         const uint32_t vui = data_a_packed32[ib].qs[4 * ib32 + j];
         const i32vec2 qs_a = iq4nl_to_i8x8(vui);
 
-        q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[j]);
-        q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[j + 4]);
+        [[unroll]] for (uint c = 0; c < NUM_COLS; ++c) {
+            q_sum[c] += dotPacked4x8EXT(qs_a.x, cache_b_qs[c][j]);
+            q_sum[c] += dotPacked4x8EXT(qs_a.y, cache_b_qs[c][j + 4]);
+        }
     }
 
     const uint sl = (data_a_packed32[ib].scales_l >> (4 * ib32)) & 0xF;
     const uint sh = (data_a_packed32[ib].scales_h >> (2 * ib32)) & 3;
     const float d = float(data_a[ib].d) * float(int(sl | (sh << 4)) - 32);
 
-    return FLOAT_TYPE(float(cache_b_ds.x) * d * float(q_sum));
+    [[unroll]] for (uint c = 0; c < NUM_COLS; ++c) {
+        temp[c][row_idx] += FLOAT_TYPE(float(cache_b_ds[c].x) * d * float(q_sum[c]));
+    }
 }
 #endif
 
@@ -540,9 +563,7 @@ vec2 get_dm(uint ib, uint iqs) {
     return FLOAT_TYPEV2(dl, dl * (delta - 1));
 }
 
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-    int32_t q_sum = 0;
-
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const uint ib_k = ib_a / 8;
     const uint iqs_k = (ib_a % 8) * 32 + iqs * 32;
 
@@ -552,21 +573,24 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
 
     const vec2 dm = get_dm(ib_k, iqs_k);
 
-    q_sum += dotPacked4x8EXT(qs_a0.x, cache_b_qs[0]);
-    q_sum += dotPacked4x8EXT(qs_a0.y, cache_b_qs[1]);
-    q_sum += dotPacked4x8EXT(qs_a0.z, cache_b_qs[2]);
-    q_sum += dotPacked4x8EXT(qs_a0.w, cache_b_qs[3]);
-    q_sum += dotPacked4x8EXT(qs_a1.x, cache_b_qs[4]);
-    q_sum += dotPacked4x8EXT(qs_a1.y, cache_b_qs[5]);
-    q_sum += dotPacked4x8EXT(qs_a1.z, cache_b_qs[6]);
-    q_sum += dotPacked4x8EXT(qs_a1.w, cache_b_qs[7]);
+    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+        int32_t q_sum = 0;
+        q_sum += dotPacked4x8EXT(qs_a0.x, cache_b_qs[j][0]);
+        q_sum += dotPacked4x8EXT(qs_a0.y, cache_b_qs[j][1]);
+        q_sum += dotPacked4x8EXT(qs_a0.z, cache_b_qs[j][2]);
+        q_sum += dotPacked4x8EXT(qs_a0.w, cache_b_qs[j][3]);
+        q_sum += dotPacked4x8EXT(qs_a1.x, cache_b_qs[j][4]);
+        q_sum += dotPacked4x8EXT(qs_a1.y, cache_b_qs[j][5]);
+        q_sum += dotPacked4x8EXT(qs_a1.z, cache_b_qs[j][6]);
+        q_sum += dotPacked4x8EXT(qs_a1.w, cache_b_qs[j][7]);
 
-    return FLOAT_TYPE(float(cache_b_ds.x) * float(dm.x) * float(q_sum) + float(dm.y) * float(cache_b_ds.y));
+        temp[j][row_idx] += FLOAT_TYPE(float(cache_b_ds[j].x) * float(dm.x) * float(q_sum) + float(dm.y) * float(cache_b_ds[j].y));
+    }
 }
 #endif
 
 #if defined(DATA_A_IQ1_M)
-FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+void mmvq_dot_product(const uint ib_a, const uint iqs, inout FLOAT_TYPE temp[NUM_COLS][NUM_ROWS], const uint row_idx) {
     const uint ib_k = ib_a / 8;
     const uint iqs_k = (ib_a % 8) * 32 + iqs * 32;
 
@@ -580,7 +604,10 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
     const uint qs32 = data_a_packed32[ib_k].qs[ib32];
     const uint qh16 = data_a_packed16[ib_k].qh[ib32];
 
-    float sum = 0;
+    float sum[NUM_COLS];
+    [[unroll]] for (uint c = 0; c < NUM_COLS; ++c) {
+        sum[c] = 0;
+    }
     const uint sc = data_a[ib_k].scales[ib64];
     [[unroll]] for (int l = 0; l < 4; ++l) {
         const uint ib16 = 2 * ib32 + l / 2;
@@ -590,20 +617,24 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
         const float delta = ((qh & 8) != 0) ? -IQ1M_DELTA : IQ1M_DELTA;
 
         const int32_t grid = int32_t(iq1s_grid_gpu[qs | ((qh & 7) << 8)]);
+        const int32_t g0 = (grid >> 0) & 0x0F0F0F0F;
+        const int32_t g1 = (grid >> 4) & 0x0F0F0F0F;
 
-        int32_t q_sum = 0;
-        q_sum += dotPacked4x8EXT((grid >> 0) & 0x0F0F0F0F, cache_b_qs[2 * l + 0]);
-        q_sum += dotPacked4x8EXT((grid >> 4) & 0x0F0F0F0F, cache_b_qs[2 * l + 1]);
+        [[unroll]] for (uint c = 0; c < NUM_COLS; ++c) {
+            int32_t q_sum = 0;
+            q_sum += dotPacked4x8EXT(g0, cache_b_qs[c][2 * l + 0]);
+            q_sum += dotPacked4x8EXT(g1, cache_b_qs[c][2 * l + 1]);
 
-        int32_t y_sum = 0;
-        y_sum += dotPacked4x8EXT(int(0x01010101), cache_b_qs[2 * l + 0]);
-        y_sum += dotPacked4x8EXT(int(0x01010101), cache_b_qs[2 * l + 1]);
+            int32_t y_sum = 0;
+            y_sum += dotPacked4x8EXT(int(0x01010101), cache_b_qs[c][2 * l + 0]);
+            y_sum += dotPacked4x8EXT(int(0x01010101), cache_b_qs[c][2 * l + 1]);
 
-        // the -1 cancels out the bias in iq1s_grid_gpu
-        sum += dl * (q_sum + y_sum * (delta - 1));
+            // the -1 cancels out the bias in iq1s_grid_gpu
+            sum[c] += dl * (q_sum + y_sum * (delta - 1));
+        }
     }
-    sum *= float(cache_b_ds.x);
-
-    return sum;
+    [[unroll]] for (uint c = 0; c < NUM_COLS; ++c) {
+        temp[c][row_idx] += FLOAT_TYPE(sum[c] * float(cache_b_ds[c].x));
+    }
 }
 #endif
