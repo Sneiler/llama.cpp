@@ -14335,6 +14335,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 2048, 512, k, {1, 1}, {1, 1}));
     }
 
+    // Gemma 4 12B shapes for Intel Arc ANV MUL_MAT_VEC profiling
+    for (ggml_type t : {GGML_TYPE_Q4_0, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0}) {
+        for (auto [m, k] : std::vector<std::pair<int64_t, int64_t>>{{15360, 3840}, {3840, 15360}, {262144, 3840}}) {
+            for (int64_t n : {1, 2, 3, 4, 8}) {
+                test_cases.emplace_back(new test_mul_mat(t, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
+            }
+        }
+    }
+
     // DSV4_HC_PRE: n_tokens 1 is decode, 128 and 512 are prompt batches
     for (int64_t n_tokens : {1, 128, 512}) {
         test_cases.emplace_back(new test_dsv4_hc_pre(4096, 4, n_tokens));       // DeepSeek-V4-Flash
