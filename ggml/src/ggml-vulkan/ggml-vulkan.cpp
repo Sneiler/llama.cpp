@@ -7489,10 +7489,10 @@ static bool ggml_vk_should_use_mmvq(const vk_device& device, uint32_t m, uint32_
         return false;
     }
 
-    // On Intel Mesa ANV, the FP mul_mat_vec shader significantly outperforms MMVQ
-    // for Q4_0 across all batch sizes (n=1..8).
+    // On Intel Mesa ANV, FP mul_mat_vec is faster for Q4_0 at small batches (n<=5),
+    // while aligned Q4_0 MMVQ wins for larger batches (n>=6).
     if (device->vendor_id == VK_VENDOR_ID_INTEL && device->driver_id == vk::DriverId::eIntelOpenSourceMESA) {
-        if (src0_type == GGML_TYPE_Q4_0) {
+        if (src0_type == GGML_TYPE_Q4_0 && n <= 5) {
             return false;
         }
     }

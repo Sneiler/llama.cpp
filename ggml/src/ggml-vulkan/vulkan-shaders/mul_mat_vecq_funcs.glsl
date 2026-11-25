@@ -56,11 +56,13 @@ FLOAT_TYPE mul_q8_1(const int32_t q_sum, const float da, const vec2 dsb, const i
 #endif
 
 #if defined(DATA_A_Q4_0)
-// 2-byte loads for Q4_0 blocks (18 bytes)
+// 4-byte aligned loads for Q4_0 blocks (18 bytes) to avoid unaligned 32-bit LSC loads on Intel ANV
 i32vec2 repack(uint ib, uint iqs) {
-    const u16vec2 quants = u16vec2(data_a_packed16[ib].qs[iqs * 2    ],
-                                   data_a_packed16[ib].qs[iqs * 2 + 1]);
-    const uint32_t vui = pack32(quants);
+    const uint byte_off = ib * 18u + 2u + iqs * 4u;
+    const uint w = byte_off >> 2u;
+    const uint32_t vui = ((ib & 1u) != 0u)
+        ? data_a_u32[w]
+        : ((data_a_u32[w] >> 16u) | (data_a_u32[w + 1u] << 16u));
     return i32vec2( vui       & 0x0F0F0F0F,
                    (vui >> 4) & 0x0F0F0F0F);
 }
